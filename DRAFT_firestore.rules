@@ -1,0 +1,296 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Default-Deny Catch-All Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Phase 3: Primitive Definitions & Helpers ---
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(email) {
+      return isEmailVerified() && request.auth.token.email == email;
+    }
+
+    function isAdmin() {
+      // Check if user has an active record in the admin collection
+      return isEmailVerified() && exists(/databases/$(database)/documents/users/$(request.auth.token.email)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin';
+    }
+
+    function isAuthority() {
+      return isEmailVerified() && exists(/databases/$(database)/documents/users/$(request.auth.token.email)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'authority';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Prevent direct execution of existing() inside read/delete rules where resource is null
+    function existing() {
+      return resource.data;
+    }
+
+    // Enforce temporal validation of timestamps
+    function isNow(timestamp) {
+      return timestamp == request.time;
+    }
+
+    // --- Phase 2: Schema Validation Blueprints (No DB Reads) ---
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role', 'points', 'badges', 'verificationsDone', 'reportsFiled', 'gameCompletedCount']) &&
+             data.keys().size() <= 11 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.role is string && (data.role == 'citizen' || data.role == 'authority' || data.role == 'admin') &&
+             data.points is int && data.points >= 0 &&
+             data.badges is list && data.badges.size() <= 50 &&
+             data.verificationsDone is int && data.verificationsDone >= 0 &&
+             data.reportsFiled is int && data.reportsFiled >= 0 &&
+             data.gameCompletedCount is int && data.gameCompletedCount >= 0 &&
+             (!data.keys().hasAny(['department']) || data.department is string);
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['id', 'title', 'description', 'category', 'status', 'severity', 'department', 'reporterName', 'reporterEmail', 'createdAt', 'updatedAt', 'latitude', 'longitude', 'address', 'imageUrl', 'verificationCount', 'downvoteCount', 'verifications', 'aiConfidence', 'aiReasoning']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.description is string && data.description.size() <= 5000 &&
+             data.category is string && (data.category == 'pothole' || data.category == 'garbage' || data.category == 'leakage' || data.category == 'streetlight' || data.category == 'road_damage' || data.category == 'other') &&
+             data.status is string && (data.status == 'reported' || data.status == 'verifying' || data.status == 'verified' || data.status == 'in_progress' || data.status == 'resolved' || data.status == 'failed_verification') &&
+             data.severity is string && (data.severity == 'low' || data.severity == 'medium' || data.severity == 'high') &&
+             data.department is string && data.department.size() <= 200 &&
+             data.reporterName is string && data.reporterName.size() <= 100 &&
+             data.reporterEmail is string && data.reporterEmail.size() <= 100 &&
+             data.latitude is number && data.longitude is number &&
+             data.address is string && data.address.size() <= 300 &&
+             data.imageUrl is string && data.imageUrl.size() <= 1000 &&
+             data.verificationCount is int && data.verificationCount >= 0 &&
+             data.downvoteCount is int && data.downvoteCount >= 0 &&
+             data.verifications is list && data.verifications.size() <= 10000 &&
+             data.aiConfidence is number && data.aiConfidence >= 0.0 && data.aiConfidence <= 1.0 &&
+             data.aiReasoning is string && data.aiReasoning.size() <= 2000 &&
+             (!data.keys().hasAny(['resolutionProofUrl']) || data.resolutionProofUrl is string) &&
+             (!data.keys().hasAny(['resolutionProofDescription']) || data.resolutionProofDescription is string);
+    }
+
+    function isValidDepartment(data) {
+      return data.keys().hasAll(['code', 'name', 'manager', 'activeStaffCount']) &&
+             data.keys().size() <= 5 &&
+             data.code is string && data.code.size() <= 10 &&
+             data.name is string && data.name.size() <= 200 &&
+             data.manager is string && data.manager.size() <= 100 &&
+             data.activeStaffCount is int && data.activeStaffCount >= 0;
+    }
+
+    function isValidAuthority(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'departmentCode', 'role', 'activeWorkOrders', 'completedWorkOrdersCount', 'joinedAt']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.departmentCode is string && data.departmentCode.size() <= 10 &&
+             data.role is string && (data.role == 'officer' || data.role == 'manager') &&
+             data.activeWorkOrders is list && data.activeWorkOrders.size() <= 1000 &&
+             data.completedWorkOrdersCount is int && data.completedWorkOrdersCount >= 0;
+    }
+
+    function isValidVerificationLog(data) {
+      return data.keys().hasAll(['id', 'userId', 'reportId', 'voteType', 'timestamp', 'pointsEarned']) &&
+             data.keys().size() == 6 &&
+             data.id is string && data.id.size() <= 256 &&
+             data.userId is string && data.userId.size() <= 100 &&
+             data.reportId is string && data.reportId.size() <= 128 &&
+             data.voteType is string && (data.voteType == 'upvote' || data.voteType == 'downvote') &&
+             data.pointsEarned is int && data.pointsEarned >= 0;
+    }
+
+    function isValidReward(data) {
+      return data.keys().hasAll(['id', 'title', 'description', 'pointsCost', 'code', 'claimedCount']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.pointsCost is int && data.pointsCost >= 0 &&
+             data.code is string && data.code.size() <= 50 &&
+             data.claimedCount is int && data.claimedCount >= 0 &&
+             (!data.keys().hasAny(['imageUrl']) || data.imageUrl is string);
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.keys().size() <= 8 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.userId is string && data.userId.size() <= 100 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.message is string && data.message.size() <= 1000 &&
+             data.type is string && (data.type == 'report_status_change' || data.type == 'reward_unlocked' || data.type == 'badge_earned' || data.type == 'system_alert') &&
+             data.read is bool &&
+             (!data.keys().hasAny(['relatedEntityId']) || data.relatedEntityId is string);
+    }
+
+    function isValidPredictionHistory(data) {
+      return data.keys().hasAll(['id', 'region', 'category', 'riskScore', 'reasoning', 'latitude', 'longitude', 'predictedTimeline', 'generatedAt']) &&
+             data.keys().size() == 9 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.region is string && data.region.size() <= 200 &&
+             data.category is string && (data.category == 'pothole' || data.category == 'garbage' || data.category == 'leakage' || data.category == 'streetlight' || data.category == 'road_damage' || data.category == 'other') &&
+             data.riskScore is number && data.riskScore >= 0.0 && data.riskScore <= 100.0 &&
+             data.reasoning is string && data.reasoning.size() <= 2000 &&
+             data.latitude is number && data.longitude is number &&
+             data.predictedTimeline is string && data.predictedTimeline.size() <= 200;
+    }
+
+    // Enforce high performance standings constraints
+    function isValidLeaderboardEntry(data) {
+      return data.keys().hasAll(['userId', 'name', 'points', 'reportsCount', 'rank', 'role', 'updatedAt']) &&
+             data.keys().size() == 7 &&
+             data.userId is string && data.userId.size() <= 100 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.points is int && data.points >= 0 &&
+             data.reportsCount is int && data.reportsCount >= 0 &&
+             data.rank is int && data.rank >= 1 &&
+             data.role is string && data.role.size() <= 50;
+    }
+
+    function isValidStatusHistory(data) {
+      return data.keys().hasAll(['id', 'reportId', 'previousStatus', 'newStatus', 'changedBy', 'timestamp']) &&
+             data.keys().size() <= 7 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.reportId is string && data.reportId.size() <= 128 &&
+             data.previousStatus is string && data.newStatus is string &&
+             data.changedBy is string && data.changedBy.size() <= 100 &&
+             (!data.keys().hasAny(['comment']) || data.comment is string);
+    }
+
+
+    // --- Phase 4: Match Block Directives ---
+
+    // Collection 1: Users
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && (userId == request.auth.token.email || isAdmin() || isAuthority());
+      
+      // Prevent Self-Assigned Roles: Citizens can create their profile only as citizen
+      allow create: if isEmailVerified() && isValidId(userId) && userId == request.auth.token.email &&
+                    isValidUser(incoming()) && incoming().role == 'citizen' && incoming().points == 10 &&
+                    incoming().badges.size() == 0;
+                    
+      // Named Update Actions with strict key changes
+      allow update: if isEmailVerified() && isValidId(userId) && isValidUser(incoming()) && (
+        isAdmin() ||
+        // Action: Self edit profile metadata (can only change name)
+        (userId == request.auth.token.email && incoming().diff(existing()).affectedKeys().hasOnly(['name'])) ||
+        // Action: Complete safety training game (triggered through app game flow, increases gameCompletedCount & points & potential badges)
+        (userId == request.auth.token.email && incoming().diff(existing()).affectedKeys().hasOnly(['gameCompletedCount', 'points', 'badges'])) ||
+        // Action: Upvote / verify feedback contribution (gains reward points and updates tally)
+        (userId == request.auth.token.email && incoming().diff(existing()).affectedKeys().hasOnly(['points', 'verificationsDone', 'badges']))
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    // Collection 2: Reports (Issues)
+    match /reports/{reportId} {
+      allow read: if isSignedIn();
+      
+      // Citizen report filing
+      allow create: if isEmailVerified() && isValidId(reportId) && isValidReport(incoming()) &&
+                    incoming().reporterEmail == request.auth.token.email && incoming().status == 'reported' &&
+                    incoming().verificationCount == 0 && incoming().downvoteCount == 0 &&
+                    incoming().verifications.size() == 0;
+                    
+      // Secure state machine & update boundaries
+      allow update: if isEmailVerified() && isValidId(reportId) && isValidReport(incoming()) && (
+        isAdmin() ||
+        // Action 1: Client Upvote Verification Toggle
+        (incoming().diff(existing()).affectedKeys().hasOnly(['verifications', 'verificationCount', 'status']) &&
+         // Must match current email in array or must toggle correctly
+         incoming().status != 'resolved' && existing().status != 'resolved') ||
+         
+        // Action 2: Authority action resolution or status shift
+        (isAuthority() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'department', 'resolutionProofUrl', 'resolutionProofDescription', 'updatedAt']))
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    // Collection 3: Departments
+    match /departments/{departmentCode} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Collection 4: Authority Directory
+    match /authority/{authorityId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Collection 5: Verifications Log
+    match /verifications/{verificationId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.userId == request.auth.token.email;
+      
+      allow create: if isEmailVerified() && isValidId(verificationId) && isValidVerificationLog(incoming()) &&
+                    incoming().userId == request.auth.token.email &&
+                    // Integrity verification of active parent report document
+                    exists(/databases/$(database)/documents/reports/$(incoming().reportId));
+                    
+      allow update: if false; // Audit logs are immutable
+      allow delete: if isAdmin();
+    }
+
+    // Collection 6: Reward Catalog
+    match /rewards/{rewardId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Collection 7: Notifications
+    match /notifications/{notificationId} {
+      allow read: if isEmailVerified() && resource.data.userId == request.auth.token.email;
+      allow create: if isEmailVerified() && isValidId(notificationId) && isValidNotification(incoming()) &&
+                    incoming().userId == request.auth.token.email;
+      allow update: if isEmailVerified() && isValidNotification(incoming()) &&
+                    existing().userId == request.auth.token.email &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isEmailVerified() && resource.data.userId == request.auth.token.email;
+    }
+
+    // Collection 8: Prediction History logs
+    match /prediction_history/{predictionId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin(); // Server-only, client-immutable
+    }
+
+    // Collection 9: Leaderboard cache standings
+    match /leaderboard/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin(); // Server-only caching
+    }
+
+    // Collection 10: Status History Logs
+    match /status_history/{historyId} {
+      allow read: if isSignedIn();
+      allow create: if isEmailVerified() && isValidId(historyId) && isValidStatusHistory(incoming()) &&
+                    (isAuthority() || isAdmin() || incoming().changedBy == 'System/AI') &&
+                    exists(/databases/$(database)/documents/reports/$(incoming().reportId));
+      allow update, delete: if false; // Strict immutability
+    }
+  }
+}

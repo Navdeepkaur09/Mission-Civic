@@ -1,0 +1,6 @@
+{
+  "name": "CivicResolve",
+  "description": "An AI-powered Community Issue Reporting, Verification, and Resolution Platform with citizen, authority, and admin portals, gamified safety mini-games, and predictive heatmaps.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
